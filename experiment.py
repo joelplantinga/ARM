@@ -1,159 +1,207 @@
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import MultinomialNB
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score
-from sklearn.feature_selection import mutual_info_classif
-
-from copy import deepcopy
-from preprocessing import split_data
 import pandas as pd
 import numpy as np
 
+from sklearn.svm import SVC
+from sklearn.naive_bayes import MultinomialNB
 
-def calculate_mut_info(X_train_bin,y_train_bin):
+from sklearn.feature_selection import mutual_info_classif
+from preprocessing import split_data2
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
-    mut_ind_score = mutual_info_classif(X_train_bin,y_train_bin, discrete_features=True)
+from sklearn.preprocessing import StandardScaler
+
+import time
+
+
+np.random.seed(0)
+
+
+
+
+
+def init_svm(language, type, size):
+
+    tuning_svm = pd.read_csv(f"hyper_params/tuning_{language}_{type}_{size}_svm.csv")
+    
+    best_C = tuning_svm.loc[np.argmax(tuning_svm['value']), 'params_C']
+    best_gamma = tuning_svm.loc[np.argmax(tuning_svm['value']), 'params_gamma']
+    best_kernel = tuning_svm.loc[np.argmax(tuning_svm['value']), 'params_kernel']
+
+    return SVC(C=best_C, gamma=best_gamma, kernel = best_kernel)
+
+def get_nb_features(X_train, y_train, language, type, size):
+
+    tuning_svm = pd.read_csv(f"hyper_params/tuning_{language}_{type}_{size}_nb.csv")
+    num_features = tuning_svm.loc[np.argmax(tuning_svm['value']), 'params_feats']
+
+    mut_ind_score = mutual_info_classif(X_train, y_train)
 
     mutual_info = pd.Series(mut_ind_score)
     mutual_info.index = X_train.columns
     mutual_info = mutual_info.sort_values(ascending=False)
 
-    return mutual_info
+    return mutual_info[:num_features]
 
 
-ITERATIONS = 1 # number of iterations per classifier - ngram pair
-
-used_features = {
-                  'naive_bayes':
-                    {
-                        'unigram': 735, 
-                        'bigram': 1505 
-                    },
-                'logistic_regression':
-                    {
-                        'unigram': 881, 
-                        'bigram': 4621
-                    }, 
-                'random_forest':
-                    {
-                        'unigram': 641, 
-                        'bigram': 971
-                    },
-                'decision_tree':
-                    {
-                        'unigram': 1010, 
-                        'bigram': 441
-                    } 
-                }   
 
 
-classifiers = { 'naive_bayes': 
-                    {
-                        'unigram': MultinomialNB(),
-                        'bigram': MultinomialNB()
-                    },
-                'logistic_regression':
-                    {
-                        'unigram': LogisticRegression(C=4451, penalty='l1', solver='liblinear'),
-                        'bigram': LogisticRegression(C=1581, penalty='l1', solver='liblinear')
-                    },
-                'random_forest':
-                    {
-                        'unigram': RandomForestClassifier(max_depth=None, n_estimators=244,max_features=30),
-                        'bigram': RandomForestClassifier(max_depth=70, n_estimators=150,max_features=10)
-                    },
-                'decision_tree':
-                    {
-                        'unigram': DecisionTreeClassifier(max_depth=20,max_features=11),
-                        'bigram': DecisionTreeClassifier(max_depth=60,max_features=330)
-                    }
-            }
+
+def run_nb(language, size, ext):
 
 
-exp_df = pd.DataFrame()
+    df = pd.read_csv(f"data/{language}_{ext}.csv")
+    X_train, y_train, X_test, y_test = split_data2(df, train_size=800, test_size= 170)
+    
+    nb_feats = get_nb_features(X_train, y_train, language, ext, size)
 
-for ngram in ['unigram', 'bigram']:
-
-
-    dt = pd.read_csv(f"data/converted_count_{ngram}.csv")
-    dt_binary = pd.read_csv(f"data/converted_binary_{ngram}.csv")
-
-    X_train_bin, y_train_bin, X_test_bin, y_test_bin = split_data(dt_binary)
-    X_train, y_train, X_test, y_test = split_data(dt)
-
-    mutual_info = calculate_mut_info(X_train_bin,y_train_bin)
+    start = time.time()
 
 
-    for classif_name in ['naive_bayes', 'logistic_regression', 'random_forest', 'decision_tree']:
+    nb_count = MultinomialNB()
+    
 
-        num_feat = used_features[classif_name][ngram]
-        selected = mutual_info[:num_feat]
+    nb_count.fit(X_train.loc[:, nb_feats.index], y_train)
+    nb_count.predict(X_test.loc[:, nb_feats.index])
 
-        results = []
+    end = time.time()
+    return end - start
 
-        for i in range(ITERATIONS):
 
-            classifier = deepcopy(classifiers[classif_name][ngram])
+def run_svm(language, size, ext):
 
-            classifier.fit(X_train.loc[:,selected.index], y_train)
 
-            y_pred = classifier.predict(X_test.loc[:,selected.index])
+    df = pd.read_csv(f"data/{language}_{ext}.csv")
 
-            accuracy = accuracy_score(y_test, y_pred)
-            precision, recall, fscore, support = precision_recall_fscore_support(y_test, y_pred, average='binary')
+    X_train, y_train, X_test, y_test = split_data2(df, train_size=800, test_size= 170)
+    
+    start = time.time()
+
+
+    svm = init_svm(language, ext, size)
+
+    s = StandardScaler()
+
+
+    svm.fit(s.fit_transform(X_train), y_train)
+    svm.predict(s.transform(X_test))
+
+    end = time.time()
+    return end - start
+
+
+
+def time_experiment(language, size):
+
+    print('running the time experiment')
+
+    results = []
+
+    for i in range(20):
+
+        print(f"running {i}'th iteration")
+
+        result = {
+                    f"naive_bayes_count": run_nb(language, size, 'count'), 
+                    f"naive_bayes_tfidf": run_nb(language, size, 'tfidf'), 
+                    f"svm_count": run_svm(language, size, 'count'), 
+                    f"svm_tfidf": run_svm(language, size, 'tfidf'), 
+                }
+        results.append(result)
+
+    results = pd.DataFrame(results)
+
+    results.to_csv('results/time_experiment.csv')
+
+
+
+def experiment(language, size):
+
+
+    print(f"Running the experiment for\n LANGUAGE: {language}\n SIZE:{size}\n")
+
+    if size == 'normal':
+        train_s = 800
+        test_s = 170
+    elif size == 'small':
+        train_s = 100
+        test_s = 170
+
+    df_count = pd.read_csv(f"data/{language}_count.csv")
+    df_tfidf = pd.read_csv(f"data/{language}_count.csv")
+
+    X_train_cnt, y_train_cnt, X_test_cnt, y_test_cnt = split_data2(df_count, train_size=train_s, test_size= test_s)
+    X_train_tf, y_train_tf, X_test_tf, y_test_tf = split_data2(df_tfidf, train_size=train_s, test_size= test_s)
+
+    nb_count_feats = get_nb_features(X_train_cnt, y_train_cnt, language, 'count', size)
+    nb_tfidf_feats = get_nb_features(X_train_tf, y_train_tf, language, 'tfidf', size)
+
+    nb_count = MultinomialNB()
+    nb_tfidf = MultinomialNB()
+
+    svm_count = init_svm(language, 'count', size)
+    svm_tfidf = init_svm(language, 'tfidf', size)
+
+    print('start fitting')
+
+    s_1 = StandardScaler()
+    s_2 = StandardScaler()
+
+
+
+    nb_count.fit(X_train_cnt.loc[:, nb_count_feats.index], y_train_cnt)
+    nb_tfidf.fit(X_train_tf.loc[:, nb_tfidf_feats.index], y_train_tf)
+
+    svm_count.fit(s_1.fit_transform(X_train_cnt), y_train_cnt)
+    svm_tfidf.fit(s_2.fit_transform(X_train_tf), y_train_tf)
+
+    print('start predicting')
+
+    res = pd.DataFrame.from_dict(
+        {
+            'svm_count' : svm_count.predict(s_1.transform(X_test_cnt)),
+            'svm_tfidf' : svm_tfidf.predict(s_2.transform(X_test_tf)),
+            'nb_count' : nb_count.predict(X_test_cnt.loc[:, nb_count_feats.index]),
+            'nb_tfidf' : nb_tfidf.predict(X_test_tf.loc[:, nb_tfidf_feats.index]),
+            'true' : y_test_cnt.values,
+        }
+    )
+
+    res.to_csv(f"results/experiment_raw_{language}_{size}.csv")
+
+    results = []
+
+    for model in ['nb', 'svm']:
+
+        for ext in ['count', 'tfidf']:
+
+            accuracy = accuracy_score(res["true"], res[f"{model}_{ext}"])
+            precision, recall, fscore, support = precision_recall_fscore_support(res["true"], res[f"{model}_{ext}"], average='binary')
 
             result = {
-                        f"{classif_name}_{ngram}_accuracy": accuracy, 
-                        f"{classif_name}_{ngram}_precision": precision, 
-                        f"{classif_name}_{ngram}_recall": recall, 
-                        f"{classif_name}_{ngram}_fscore": fscore
+                        f"name": f"{model}_{ext}",
+                        f"accuracy": accuracy, 
+                        f"precision": precision, 
+                        f"recall": recall, 
+                        f"fscore": fscore
                     }
             
             results.append(result)
 
-
-            # corr_num = 50
-            # # neg_class_prob_sorted = classifier.feature_log_prob_[0, :].argsort()[::-1]
-            # # pos_class_prob_sorted = classifier.feature_log_prob_[1, :].argsort()[::-1]
-            # outcome = pd.Series(np.subtract(classifier.feature_log_prob_[1, :],
-            #                       classifier.feature_log_prob_[0, :])).abs().argsort()[::-1]
-
-            # outcome_val = sorted(np.subtract(classifier.feature_log_prob_[1, :],
-            #                              classifier.feature_log_prob_[0, :]), 
-            #                 reverse=True, key=abs)
-            
-            # # print(np.take(X_train.loc[:,selected.index].columns, outcome[:10]))
-            # # print(outcome_val[:10])
-
-            # test_df = pd.DataFrame(data={
-            #     "name": np.take(X_train.loc[:,selected.index].columns, outcome[:corr_num]),
-            #     "value":outcome_val[:corr_num]
-            # })
-            # print(test_df)
-
-            # test_df.to_csv('results/feature_class_importance.csv')
+    results = pd.DataFrame(results)
+    results.to_csv(f"results/experiment_aggregated_{language}_{size}.csv")
 
 
 
-            # exit(0)
-        
-        print(pd.DataFrame(results))
-        exp_df = pd.concat([exp_df, pd.DataFrame(results)], axis=1)
+
+
+if __name__ == "__main__":
+
+    time_experiment('english', 'normal')
+    # experiment('english', 'normal')
+    # experiment('spanish', 'normal')
+    # experiment('english', 'small')
 
 
 
-exp_df.to_csv(f"results/experiment_results_{ITERATIONS}.csv", index=False)
 
-aggregated_df = []
 
-for column in exp_df.columns:
-
-    print(f"average {column}: {round(exp_df[column].mean(), 3)}")
-
-    row = {'name': column, 'value': round(exp_df[column].mean(), 3)}
-
-    aggregated_df.append(row)
-
-aggregated_df = pd.DataFrame(aggregated_df)
-aggregated_df.to_csv(f"results/experiment_results_aggregated_{ITERATIONS}.csv", index=False)
